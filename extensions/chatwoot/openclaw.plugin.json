@@ -1,0 +1,9 @@
+{
+  "id": "chatwoot",
+  "channels": ["chatwoot"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
