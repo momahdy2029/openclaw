@@ -76,6 +76,10 @@ export function ensureMemoryIndexSchema(params: {
 
   ensureColumn(params.db, "files", "source", "TEXT NOT NULL DEFAULT 'memory'");
   ensureColumn(params.db, "chunks", "source", "TEXT NOT NULL DEFAULT 'memory'");
+  ensureColumn(params.db, "chunks", "access_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(params.db, "chunks", "last_accessed_at", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(params.db, "chunks", "success_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(params.db, "chunks", "failure_count", "INTEGER NOT NULL DEFAULT 0");
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);`);
   params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);`);
 

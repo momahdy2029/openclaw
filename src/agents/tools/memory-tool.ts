@@ -16,6 +16,11 @@ const MemorySearchSchema = Type.Object({
   minScore: Type.Optional(Type.Number()),
 });
 
+const MemoryFeedbackSchema = Type.Object({
+  chunkId: Type.String(),
+  helpful: Type.Boolean(),
+});
+
 const MemoryGetSchema = Type.Object({
   path: Type.String(),
   from: Type.Optional(Type.Number()),
@@ -129,6 +134,54 @@ export function createMemoryGetTool(options: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return jsonResult({ path: relPath, text: "", disabled: true, error: message });
+      }
+    },
+  };
+}
+
+export function createMemoryFeedbackTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const cfg = options.config;
+  if (!cfg) {
+    return null;
+  }
+  const agentId = resolveSessionAgentId({
+    sessionKey: options.agentSessionKey,
+    config: cfg,
+  });
+  if (!resolveMemorySearchConfig(cfg, agentId)) {
+    return null;
+  }
+  return {
+    label: "Memory Feedback",
+    name: "memory_feedback",
+    description:
+      "Rate a memory search result as helpful or not. Use after memory_search when a returned chunk was clearly useful (helpful=true) or irrelevant/wrong (helpful=false). This helps future searches rank better.",
+    parameters: MemoryFeedbackSchema,
+    execute: async (_toolCallId, params) => {
+      const chunkId = readStringParam(params, "chunkId", { required: true });
+      const helpful =
+        params && typeof params === "object" && "helpful" in params
+          ? Boolean((params as Record<string, unknown>).helpful)
+          : true;
+      const { manager, error } = await getMemorySearchManager({
+        cfg,
+        agentId,
+      });
+      if (!manager) {
+        return jsonResult({ ok: false, error: error ?? "memory disabled" });
+      }
+      try {
+        if (manager.feedback) {
+          manager.feedback(chunkId, helpful);
+          return jsonResult({ ok: true, chunkId, helpful });
+        }
+        return jsonResult({ ok: false, error: "feedback not supported by this backend" });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return jsonResult({ ok: false, error: message });
       }
     },
   };

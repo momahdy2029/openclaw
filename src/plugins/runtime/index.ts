@@ -1,7 +1,11 @@
 import { createRequire } from "node:module";
 import type { PluginRuntime } from "./types.js";
 import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../agents/identity.js";
-import { createMemoryGetTool, createMemorySearchTool } from "../../agents/tools/memory-tool.js";
+import {
+  createMemoryFeedbackTool,
+  createMemoryGetTool,
+  createMemorySearchTool,
+} from "../../agents/tools/memory-tool.js";
 import { handleSlackAction } from "../../agents/tools/slack-actions.js";
 import {
   chunkByNewline,
@@ -260,6 +264,7 @@ export function createPluginRuntime(): PluginRuntime {
       textToSpeechTelephony,
     },
     tools: {
+      createMemoryFeedbackTool,
       createMemoryGetTool,
       createMemorySearchTool,
       registerMemoryCli,

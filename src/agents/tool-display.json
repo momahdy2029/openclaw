@@ -289,6 +289,11 @@
       "title": "Memory Search",
       "detailKeys": ["query"]
     },
+    "memory_feedback": {
+      "emoji": "👍",
+      "title": "Memory Feedback",
+      "detailKeys": ["chunkId", "helpful"]
+    },
     "memory_get": {
       "emoji": "📓",
       "title": "Memory Get",

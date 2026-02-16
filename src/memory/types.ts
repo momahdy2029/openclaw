@@ -1,6 +1,7 @@
 export type MemorySource = "memory" | "sessions";
 
 export type MemorySearchResult = {
+  id?: string;
   path: string;
   startLine: number;
   endLine: number;
@@ -76,5 +77,6 @@ export interface MemorySearchManager {
   }): Promise<void>;
   probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult>;
   probeVectorAvailability(): Promise<boolean>;
+  feedback?(chunkId: string, helpful: boolean): void;
   close?(): Promise<void>;
 }

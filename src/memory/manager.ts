@@ -23,7 +23,12 @@ import {
   type OpenAiEmbeddingClient,
   type VoyageEmbeddingClient,
 } from "./embeddings.js";
-import { bm25RankToScore, buildFtsQuery, mergeHybridResults } from "./hybrid.js";
+import {
+  type ChunkAccessMeta,
+  bm25RankToScore,
+  buildFtsQuery,
+  mergeHybridResults,
+} from "./hybrid.js";
 import { isMemoryPath, normalizeExtraMemoryPaths } from "./internal.js";
 import { memoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
 import { searchKeyword, searchVector } from "./manager-search.js";
@@ -236,7 +241,14 @@ export class MemoryIndexManager implements MemorySearchManager {
       : [];
 
     if (!hybrid.enabled) {
-      return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      const results = vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+      const returnedIds = results.map((r) => r.id).filter(Boolean);
+      if (returnedIds.length > 0) {
+        try {
+          this.updateAccessStats(returnedIds);
+        } catch {}
+      }
+      return results;
     }
 
     const merged = this.mergeHybridResults({
@@ -246,7 +258,14 @@ export class MemoryIndexManager implements MemorySearchManager {
       textWeight: hybrid.textWeight,
     });
 
-    return merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    const results = merged.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    const returnedIds = results.map((r) => r.id).filter((id): id is string => Boolean(id));
+    if (returnedIds.length > 0) {
+      try {
+        this.updateAccessStats(returnedIds);
+      } catch {}
+    }
+    return results;
   }
 
   private async searchVector(
@@ -299,6 +318,14 @@ export class MemoryIndexManager implements MemorySearchManager {
     vectorWeight: number;
     textWeight: number;
   }): MemorySearchResult[] {
+    const allIds = new Set<string>();
+    for (const r of params.vector) {
+      allIds.add(r.id);
+    }
+    for (const r of params.keyword) {
+      allIds.add(r.id);
+    }
+    const chunkMeta = this.loadChunkMeta(Array.from(allIds));
     const merged = mergeHybridResults({
       vector: params.vector.map((r) => ({
         id: r.id,
@@ -320,8 +347,63 @@ export class MemoryIndexManager implements MemorySearchManager {
       })),
       vectorWeight: params.vectorWeight,
       textWeight: params.textWeight,
+      chunkMeta: chunkMeta.size > 0 ? chunkMeta : undefined,
     });
     return merged.map((entry) => entry as MemorySearchResult);
+  }
+
+  private loadChunkMeta(ids: string[]): Map<string, ChunkAccessMeta> {
+    const meta = new Map<string, ChunkAccessMeta>();
+    if (ids.length === 0) {
+      return meta;
+    }
+    const batchSize = 400;
+    for (let start = 0; start < ids.length; start += batchSize) {
+      const batch = ids.slice(start, start + batchSize);
+      const placeholders = batch.map(() => "?").join(", ");
+      const rows = this.db
+        .prepare(
+          `SELECT id, access_count, last_accessed_at, success_count, failure_count FROM chunks WHERE id IN (${placeholders})`,
+        )
+        .all(...batch) as Array<{
+        id: string;
+        access_count: number;
+        last_accessed_at: number;
+        success_count: number;
+        failure_count: number;
+      }>;
+      for (const row of rows) {
+        meta.set(row.id, {
+          access_count: row.access_count,
+          last_accessed_at: row.last_accessed_at,
+          success_count: row.success_count,
+          failure_count: row.failure_count,
+        });
+      }
+    }
+    return meta;
+  }
+
+  private updateAccessStats(ids: string[]): void {
+    if (ids.length === 0) {
+      return;
+    }
+    const now = Date.now();
+    const batchSize = 400;
+    for (let start = 0; start < ids.length; start += batchSize) {
+      const batch = ids.slice(start, start + batchSize);
+      const placeholders = batch.map(() => "?").join(", ");
+      this.db
+        .prepare(
+          `UPDATE chunks SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN (${placeholders})`,
+        )
+        .run(now, ...batch);
+    }
+  }
+
+  feedback(chunkId: string, helpful: boolean): void {
+    const col = helpful ? "success_count" : "failure_count";
+    this.db.prepare(`UPDATE chunks SET ${col} = ${col} + 1 WHERE id = ?`).run(chunkId);
   }
 
   async sync(params?: {

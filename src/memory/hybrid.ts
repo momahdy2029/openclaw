@@ -1,3 +1,10 @@
+export type ChunkAccessMeta = {
+  access_count: number;
+  last_accessed_at: number;
+  success_count: number;
+  failure_count: number;
+};
+
 export type HybridSource = string;
 
 export type HybridVectorResult = {
@@ -43,7 +50,9 @@ export function mergeHybridResults(params: {
   keyword: HybridKeywordResult[];
   vectorWeight: number;
   textWeight: number;
+  chunkMeta?: Map<string, ChunkAccessMeta>;
 }): Array<{
+  id: string;
   path: string;
   startLine: number;
   endLine: number;
@@ -99,13 +108,34 @@ export function mergeHybridResults(params: {
     }
   }
 
+  const now = Date.now();
   const merged = Array.from(byId.values()).map((entry) => {
-    const score = params.vectorWeight * entry.vectorScore + params.textWeight * entry.textScore;
+    const baseScore = params.vectorWeight * entry.vectorScore + params.textWeight * entry.textScore;
+    const meta = params.chunkMeta?.get(entry.id);
+    let finalScore = baseScore;
+    if (meta) {
+      const accessBoost = 1 + 0.05 * Math.min(meta.access_count, 10);
+      let recencyFactor = 1.0;
+      if (meta.last_accessed_at > 0) {
+        const ageDays = (now - meta.last_accessed_at) / (1000 * 60 * 60 * 24);
+        if (ageDays >= 7) {
+          recencyFactor = Math.max(0.7, 1 - (ageDays - 7) / 180);
+        }
+      }
+      const outcomeBoost =
+        meta.success_count > 0 && meta.failure_count === 0
+          ? 1.2
+          : meta.failure_count >= 3 && meta.success_count === 0
+            ? 0.5
+            : 1.0;
+      finalScore = baseScore * accessBoost * recencyFactor * outcomeBoost;
+    }
     return {
+      id: entry.id,
       path: entry.path,
       startLine: entry.startLine,
       endLine: entry.endLine,
-      score,
+      score: finalScore,
       snippet: entry.snippet,
       source: entry.source,
     };

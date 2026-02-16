@@ -709,6 +709,55 @@ class MemoryManagerEmbeddingOps {
     const sample = embeddings.find((embedding) => embedding.length > 0);
     const vectorReady = sample ? await this.ensureVectorReady(sample.length) : false;
     const now = Date.now();
+
+    // Pre-compute new chunk IDs so we can preserve access/outcome stats.
+    const newChunkIds = chunks.map((chunk) =>
+      hashText(
+        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider.model}`,
+      ),
+    );
+
+    // Save access/outcome stats for chunks that will survive (same ID = same content hash).
+    const savedStats = new Map<
+      string,
+      {
+        access_count: number;
+        last_accessed_at: number;
+        success_count: number;
+        failure_count: number;
+      }
+    >();
+    if (newChunkIds.length > 0) {
+      const newIdSet = new Set(newChunkIds);
+      const batchSize = 400;
+      const idsToCheck = Array.from(newIdSet);
+      for (let start = 0; start < idsToCheck.length; start += batchSize) {
+        const batch = idsToCheck.slice(start, start + batchSize);
+        const placeholders = batch.map(() => "?").join(", ");
+        const rows = this.db
+          .prepare(
+            `SELECT id, access_count, last_accessed_at, success_count, failure_count FROM chunks WHERE id IN (${placeholders})`,
+          )
+          .all(...batch) as Array<{
+          id: string;
+          access_count: number;
+          last_accessed_at: number;
+          success_count: number;
+          failure_count: number;
+        }>;
+        for (const row of rows) {
+          if (row.access_count > 0 || row.success_count > 0 || row.failure_count > 0) {
+            savedStats.set(row.id, {
+              access_count: row.access_count,
+              last_accessed_at: row.last_accessed_at,
+              success_count: row.success_count,
+              failure_count: row.failure_count,
+            });
+          }
+        }
+      }
+    }
+
     if (vectorReady) {
       try {
         this.db
@@ -731,9 +780,7 @@ class MemoryManagerEmbeddingOps {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const embedding = embeddings[i] ?? [];
-      const id = hashText(
-        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider.model}`,
-      );
+      const id = newChunkIds[i];
       this.db
         .prepare(
           `INSERT INTO chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
@@ -782,6 +829,25 @@ class MemoryManagerEmbeddingOps {
           );
       }
     }
+
+    // Restore preserved access/outcome stats for chunks whose IDs survived.
+    if (savedStats.size > 0) {
+      const restoreStmt = this.db.prepare(
+        `UPDATE chunks SET access_count = ?, last_accessed_at = ?, success_count = ?, failure_count = ? WHERE id = ?`,
+      );
+      for (const [id, stats] of savedStats) {
+        if (newChunkIds.includes(id)) {
+          restoreStmt.run(
+            stats.access_count,
+            stats.last_accessed_at,
+            stats.success_count,
+            stats.failure_count,
+            id,
+          );
+        }
+      }
+    }
+
     this.db
       .prepare(
         `INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)
@@ -792,6 +858,62 @@ class MemoryManagerEmbeddingOps {
            size=excluded.size`,
       )
       .run(entry.path, options.source, entry.hash, entry.mtimeMs, entry.size);
+
+    // Cross-file dedup: remove near-identical chunks from other files.
+    if (vectorReady) {
+      this.deduplicateCrossFileChunks(newChunkIds, entry.path);
+    }
+  }
+
+  private deleteChunk(chunkId: string): void {
+    try {
+      this.db.prepare(`DELETE FROM ${VECTOR_TABLE} WHERE id = ?`).run(chunkId);
+    } catch {}
+    try {
+      this.db.prepare(`DELETE FROM ${FTS_TABLE} WHERE id = ?`).run(chunkId);
+    } catch {}
+    this.db.prepare(`DELETE FROM chunks WHERE id = ?`).run(chunkId);
+  }
+
+  private deduplicateCrossFileChunks(newChunkIds: string[], currentPath: string): void {
+    for (const newId of newChunkIds) {
+      try {
+        // Read the embedding blob for this new chunk.
+        const vecRow = this.db
+          .prepare(`SELECT embedding FROM ${VECTOR_TABLE} WHERE id = ?`)
+          .get(newId) as { embedding: Buffer } | undefined;
+        if (!vecRow) {
+          continue;
+        }
+        // Query for the closest match in a different file.
+        const row = this.db
+          .prepare(
+            `SELECT c.id, c.path, vec_distance_cosine(v.embedding, ?) AS dist\n` +
+              `  FROM ${VECTOR_TABLE} v\n` +
+              `  JOIN chunks c ON c.id = v.id\n` +
+              ` WHERE v.id != ? AND c.path != ?\n` +
+              ` ORDER BY dist ASC\n` +
+              ` LIMIT 1`,
+          )
+          .get(vecRow.embedding, newId, currentPath) as
+          | { id: string; path: string; dist: number }
+          | undefined;
+        if (!row) {
+          continue;
+        }
+        // vec_distance_cosine returns cosine distance (1 - cosine_similarity).
+        const similarity = 1 - row.dist;
+        if (similarity >= 0.95) {
+          log.debug(
+            `memory dedup: removing chunk ${row.id} from ${row.path} (similarity=${similarity.toFixed(3)} with ${newId})`,
+          );
+          this.deleteChunk(row.id);
+        }
+      } catch {
+        // sqlite-vec not available or query error — skip gracefully.
+        break;
+      }
+    }
   }
 }
 
