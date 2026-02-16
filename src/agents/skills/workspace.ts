@@ -232,12 +232,17 @@ export function buildWorkspaceSkillSnapshot(
   const resolvedSkills = promptEntries.map((entry) => entry.skill);
   const remoteNote = opts?.eligibility?.remote?.note?.trim();
   const prompt = [remoteNote, formatSkillsForPrompt(resolvedSkills)].filter(Boolean).join("\n");
+  const skillFilter =
+    opts?.skillFilter === undefined
+      ? undefined
+      : opts.skillFilter.map((entry) => String(entry).trim()).filter(Boolean);
   return {
     prompt,
     skills: eligible.map((entry) => ({
       name: entry.skill.name,
       primaryEnv: entry.metadata?.primaryEnv,
     })),
+    skillFilter,
     resolvedSkills,
     version: opts?.snapshotVersion,
   };

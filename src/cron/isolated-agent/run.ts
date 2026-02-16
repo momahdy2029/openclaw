@@ -105,6 +105,27 @@ const CRON_SUBAGENT_WAIT_POLL_MS = 500;
 const CRON_SUBAGENT_WAIT_MIN_MS = 30_000;
 const CRON_SUBAGENT_FINAL_REPLY_GRACE_MS = 5_000;
 
+function normalizeSkillFilterForSnapshot(skillFilter?: string[]): string[] | undefined {
+  if (skillFilter === undefined) {
+    return undefined;
+  }
+  return Array.from(
+    new Set(skillFilter.map((entry) => String(entry).trim()).filter(Boolean)),
+  ).toSorted();
+}
+
+function matchesCachedSkillFilter(cached?: string[], next?: string[]): boolean {
+  const cachedNormalized = normalizeSkillFilterForSnapshot(cached);
+  const nextNormalized = normalizeSkillFilterForSnapshot(next);
+  if (cachedNormalized === undefined || nextNormalized === undefined) {
+    return cachedNormalized === nextNormalized;
+  }
+  if (cachedNormalized.length !== nextNormalized.length) {
+    return false;
+  }
+  return cachedNormalized.every((entry, index) => entry === nextNormalized[index]);
+}
+
 function isLikelyInterimCronMessage(value: string): boolean {
   const text = value.trim();
   if (!text) {
@@ -528,9 +549,11 @@ export async function runCronIsolatedAgentTurn(params: {
   } else {
     const existingSnapshot = cronSession.sessionEntry.skillsSnapshot;
     const skillsSnapshotVersion = getSkillsSnapshotVersion(workspaceDir);
-    const needsSkillsSnapshot =
-      !existingSnapshot || existingSnapshot.version !== skillsSnapshotVersion;
     const skillFilter = resolveAgentSkillsFilter(cfgWithAgentDefaults, agentId);
+    const needsSkillsSnapshot =
+      !existingSnapshot ||
+      existingSnapshot.version !== skillsSnapshotVersion ||
+      !matchesCachedSkillFilter(existingSnapshot.skillFilter, skillFilter);
     if (needsSkillsSnapshot) {
       skillsSnapshot = buildWorkspaceSkillSnapshot(workspaceDir, {
         config: cfgWithAgentDefaults,
