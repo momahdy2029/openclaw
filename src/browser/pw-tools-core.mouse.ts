@@ -201,9 +201,23 @@ function buildCliclickArgs(path: Point[], kind: MouseKind): string[] {
 
 function runCliclick(bin: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: 10_000 }, (err) => {
+    execFile(bin, args, { timeout: 10_000 }, (err, _stdout, stderr) => {
       if (err) {
-        reject(err);
+        const errMessage = err instanceof Error ? err.message : "unknown error";
+        const msg = stderr?.trim() || errMessage;
+        if (
+          msg.includes("accessibility") ||
+          msg.includes("permission") ||
+          msg.includes("trusted")
+        ) {
+          reject(
+            new Error(
+              "cliclick needs Accessibility permissions. Go to System Settings > Privacy & Security > Accessibility and enable the app running OpenClaw (Terminal, iTerm, or node).",
+            ),
+          );
+        } else {
+          reject(new Error(`cliclick failed: ${msg}`));
+        }
       } else {
         resolve();
       }

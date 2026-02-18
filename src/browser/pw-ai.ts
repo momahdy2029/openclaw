@@ -63,3 +63,5 @@ export {
   waitForDownloadViaPlaywright,
   waitForViaPlaywright,
 } from "./pw-tools-core.js";
+
+export { mouseViaCliclick, isMouseKind } from "./pw-tools-core.mouse.js";

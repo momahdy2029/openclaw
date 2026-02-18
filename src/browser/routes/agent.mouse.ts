@@ -1,6 +1,6 @@
 import type { BrowserRouteContext } from "../server-context.js";
 import type { BrowserRouteRegistrar } from "./types.js";
-import { handleRouteError, readBody, resolveProfileContext } from "./agent.shared.js";
+import { handleRouteError, readBody, requirePwAi, resolveProfileContext } from "./agent.shared.js";
 import { jsonError, toNumber, toStringOrEmpty } from "./utils.js";
 
 export function registerBrowserAgentMouseRoutes(
@@ -30,8 +30,11 @@ export function registerBrowserAgentMouseRoutes(
       const tab = await profileCtx.ensureTabAvailable(targetId);
       const cdpUrl = profileCtx.profile.cdpUrl;
 
-      const { mouseViaCliclick } = await import("../pw-tools-core.mouse.js");
-      const result = await mouseViaCliclick({
+      const pw = await requirePwAi(res, "mouse");
+      if (!pw) {
+        return;
+      }
+      const result = await pw.mouseViaCliclick({
         cdpUrl,
         targetId: tab.targetId,
         kind: kind as "move" | "click" | "doubleClick" | "rightClick",
