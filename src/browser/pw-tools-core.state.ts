@@ -11,6 +11,19 @@ async function withCdpSession<T>(page: Page, fn: (session: CDPSession) => Promis
   }
 }
 
+export async function sendCdpCommandViaPlaywright(opts: {
+  cdpUrl: string;
+  targetId?: string;
+  method: string;
+  params?: Record<string, unknown>;
+}): Promise<unknown> {
+  const page = await getPageForTargetId(opts);
+  ensurePageState(page);
+  return await withCdpSession(page, async (session) => {
+    return await session.send(opts.method as never, (opts.params ?? {}) as never);
+  });
+}
+
 export async function setOfflineViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;

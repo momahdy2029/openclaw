@@ -236,6 +236,20 @@ export async function browserAct(
   });
 }
 
+export async function browserCdpCommand(
+  baseUrl: string | undefined,
+  req: { method: string; params?: Record<string, unknown>; targetId?: string },
+  opts?: { profile?: string },
+): Promise<unknown> {
+  const q = buildProfileQuery(opts?.profile);
+  return await fetchBrowserJson<unknown>(withBaseUrl(baseUrl, `/cdp${q}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    timeoutMs: 15000,
+  });
+}
+
 export async function browserScreenshotAction(
   baseUrl: string | undefined,
   opts: {

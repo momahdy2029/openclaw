@@ -3,6 +3,7 @@ import {
   browserAct,
   browserArmDialog,
   browserArmFileChooser,
+  browserCdpCommand,
   browserConsoleMessages,
   browserNavigate,
   browserPdfSave,
@@ -229,7 +230,7 @@ export function createBrowserTool(opts?: {
     label: "Browser",
     name: "browser",
     description: [
-      "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions).",
+      "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions/cdp).",
       'Profiles: use profile="chrome" for Chrome extension relay takeover (your existing Chrome tabs). Use profile="openclaw" for the isolated openclaw-managed browser.',
       'If the user mentions the Chrome extension / Browser Relay / toolbar button / “attach tab”, ALWAYS use profile="chrome" (do not ask which profile).',
       'When a node-hosted browser proxy is available, the tool may auto-route to it. Pin a node with node=<id|name> or target="node".',
@@ -776,6 +777,30 @@ export function createBrowserTool(opts?: {
               profile,
             }),
           );
+        }
+        case "cdp": {
+          const cdpMethod = typeof params.cdpMethod === "string" ? params.cdpMethod.trim() : "";
+          if (!cdpMethod) {
+            throw new Error("cdpMethod is required for action=cdp");
+          }
+          const cdpParams =
+            typeof params.cdpParams === "object" && params.cdpParams !== null
+              ? (params.cdpParams as Record<string, unknown>)
+              : undefined;
+          const targetId = typeof params.targetId === "string" ? params.targetId.trim() : undefined;
+          const result = proxyRequest
+            ? await proxyRequest({
+                method: "POST",
+                path: "/cdp",
+                profile,
+                body: { method: cdpMethod, params: cdpParams, targetId },
+              })
+            : await browserCdpCommand(
+                baseUrl,
+                { method: cdpMethod, params: cdpParams, targetId },
+                { profile },
+              );
+          return jsonResult(result);
         }
         case "act": {
           const request = params.request as Record<string, unknown> | undefined;
