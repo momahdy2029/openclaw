@@ -231,9 +231,9 @@ export function createBrowserTool(opts?: {
     label: "Browser",
     name: "browser",
     description: [
-      "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions/cdp).",
+      "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions/cdp/mouse).",
       'Profiles: use profile="chrome" for Chrome extension relay takeover (your existing Chrome tabs). Use profile="openclaw" for the isolated openclaw-managed browser.',
-      'If the user mentions the Chrome extension / Browser Relay / toolbar button / “attach tab”, ALWAYS use profile="chrome" (do not ask which profile).',
+      'If the user mentions the Chrome extension / Browser Relay / toolbar button / "attach tab", ALWAYS use profile="chrome" (do not ask which profile).',
       'When a node-hosted browser proxy is available, the tool may auto-route to it. Pin a node with node=<id|name> or target="node".',
       'Chrome extension relay auto-attaches tabs when alwaysOn is enabled (default). Just use profile="chrome" directly — do NOT ask the user to click the extension icon. If a request fails with no tabs, suggest checking the extension is installed and the relay is connected.',
       "When using refs from snapshot (e.g. e12), keep the same tab: prefer passing targetId from the snapshot response into subsequent actions (act/click/type/etc).",
@@ -241,6 +241,12 @@ export function createBrowserTool(opts?: {
       "Use snapshot+act for UI automation. Avoid act:wait by default; use only in exceptional cases when no reliable UI state exists.",
       `target selects browser location (sandbox|host|node). Default: ${targetDefault}.`,
       hostHint,
+      // Physical mouse cursor control (action=mouse)
+      "action=mouse physically moves the macOS cursor with human-like Bezier curves and clicks via cliclick. The cursor follows a smooth curved path with natural acceleration/deceleration and slight overshoot on long moves — it looks like a real person moving the mouse.",
+      "Use action=mouse for: FedCM/Google sign-in dialogs, native OS popups, cookie banners that resist CDP clicks, or any element that act:click cannot reach.",
+      'mouse params: mouseKind="move"|"click"|"doubleClick"|"rightClick" (default "click"). Target element via ref (from snapshot) + targetId, OR raw screen coordinates via x/y.',
+      "Examples: action=mouse profile=chrome mouseKind=click ref=e5 targetId=TARGET_ID | action=mouse mouseKind=move ref=e12 | action=mouse mouseKind=click x=500 y=300.",
+      "Prefer act:click for normal elements (faster, more reliable). Use action=mouse only when act:click fails or for native UI that CDP cannot interact with.",
     ].join(" "),
     parameters: BrowserToolSchema,
     execute: async (_toolCallId, args) => {
