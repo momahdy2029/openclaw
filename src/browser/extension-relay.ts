@@ -469,8 +469,13 @@ export async function ensureChromeExtensionRelayServer(opts: {
 
     if (pathname === "/extension") {
       if (extensionWs) {
-        rejectUpgrade(socket, 409, "Extension already connected");
-        return;
+        // Close stale connection so the reloaded extension can reconnect.
+        try {
+          extensionWs.close(1000, "replaced by new extension connection");
+        } catch {
+          // ignore
+        }
+        extensionWs = null;
       }
       wssExtension.handleUpgrade(req, socket, head, (ws) => {
         wssExtension.emit("connection", ws, req);
