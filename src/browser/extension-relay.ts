@@ -614,6 +614,11 @@ export async function ensureChromeExtensionRelayServer(opts: {
 
     ws.on("close", () => {
       clearInterval(ping);
+      // Guard: only tear down state if this is still the active extension.
+      // A replaced connection's close event must not clobber the new one.
+      if (extensionWs !== ws) {
+        return;
+      }
       extensionWs = null;
       for (const [, pending] of pendingExtension) {
         clearTimeout(pending.timer);
