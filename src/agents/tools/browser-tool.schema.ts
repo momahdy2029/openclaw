@@ -32,6 +32,7 @@ const BROWSER_TOOL_ACTIONS = [
   "upload",
   "dialog",
   "act",
+  "mouse",
   "cdp",
 ] as const;
 
@@ -110,6 +111,10 @@ export const BrowserToolSchema = Type.Object({
   accept: Type.Optional(Type.Boolean()),
   promptText: Type.Optional(Type.String()),
   request: Type.Optional(BrowserActSchema),
+  // mouse (physical cursor via cliclick)
+  mouseKind: Type.Optional(Type.String()),
+  x: Type.Optional(Type.Number()),
+  y: Type.Optional(Type.Number()),
   // cdp
   cdpMethod: Type.Optional(Type.String()),
   cdpParams: Type.Optional(Type.Object({}, { additionalProperties: true })),

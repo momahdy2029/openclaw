@@ -250,6 +250,40 @@ export async function browserCdpCommand(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Mouse (physical cursor via cliclick)
+// ---------------------------------------------------------------------------
+
+export type BrowserMouseRequest = {
+  kind: "move" | "click" | "doubleClick" | "rightClick";
+  ref?: string;
+  x?: number;
+  y?: number;
+  targetId?: string;
+};
+
+export type BrowserMouseResponse = {
+  ok: true;
+  targetId: string;
+  screenX: number;
+  screenY: number;
+  kind: string;
+};
+
+export async function browserMouse(
+  baseUrl: string | undefined,
+  req: BrowserMouseRequest,
+  opts?: { profile?: string },
+): Promise<BrowserMouseResponse> {
+  const q = buildProfileQuery(opts?.profile);
+  return await fetchBrowserJson<BrowserMouseResponse>(withBaseUrl(baseUrl, `/mouse${q}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    timeoutMs: 20000,
+  });
+}
+
 export async function browserScreenshotAction(
   baseUrl: string | undefined,
   opts: {

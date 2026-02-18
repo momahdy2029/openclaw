@@ -5,6 +5,7 @@ import {
   browserArmFileChooser,
   browserCdpCommand,
   browserConsoleMessages,
+  browserMouse,
   browserNavigate,
   browserPdfSave,
   browserScreenshotAction,
@@ -234,7 +235,7 @@ export function createBrowserTool(opts?: {
       'Profiles: use profile="chrome" for Chrome extension relay takeover (your existing Chrome tabs). Use profile="openclaw" for the isolated openclaw-managed browser.',
       'If the user mentions the Chrome extension / Browser Relay / toolbar button / “attach tab”, ALWAYS use profile="chrome" (do not ask which profile).',
       'When a node-hosted browser proxy is available, the tool may auto-route to it. Pin a node with node=<id|name> or target="node".',
-      "Chrome extension relay needs an attached tab: user must click the OpenClaw Browser Relay toolbar icon on the tab (badge ON). If no tab is connected, ask them to attach it.",
+      'Chrome extension relay auto-attaches tabs when alwaysOn is enabled (default). Just use profile="chrome" directly — do NOT ask the user to click the extension icon. If a request fails with no tabs, suggest checking the extension is installed and the relay is connected.',
       "When using refs from snapshot (e.g. e12), keep the same tab: prefer passing targetId from the snapshot response into subsequent actions (act/click/type/etc).",
       'For stable, self-resolving refs across calls, use snapshot with refs="aria" (Playwright aria-ref ids). Default refs="role" are role+name-based.',
       "Use snapshot+act for UI automation. Avoid act:wait by default; use only in exceptional cases when no reliable UI state exists.",
@@ -778,6 +779,38 @@ export function createBrowserTool(opts?: {
             }),
           );
         }
+        case "mouse": {
+          const mouseKind = readStringParam(params, "mouseKind") ?? "click";
+          if (!["move", "click", "doubleClick", "rightClick"].includes(mouseKind)) {
+            throw new Error("mouseKind must be one of: move, click, doubleClick, rightClick");
+          }
+          const ref = readStringParam(params, "ref");
+          const targetId = readStringParam(params, "targetId");
+          const x =
+            typeof params.x === "number" && Number.isFinite(params.x) ? params.x : undefined;
+          const y =
+            typeof params.y === "number" && Number.isFinite(params.y) ? params.y : undefined;
+          if (!ref && (x === undefined || y === undefined)) {
+            throw new Error("ref or x/y screen coordinates are required for action=mouse");
+          }
+          const mouseBody = {
+            kind: mouseKind as "move" | "click" | "doubleClick" | "rightClick",
+            ref,
+            targetId,
+            x,
+            y,
+          };
+          if (proxyRequest) {
+            const result = await proxyRequest({
+              method: "POST",
+              path: "/mouse",
+              profile,
+              body: mouseBody,
+            });
+            return jsonResult(result);
+          }
+          return jsonResult(await browserMouse(baseUrl, mouseBody, { profile }));
+        }
         case "cdp": {
           const cdpMethod = typeof params.cdpMethod === "string" ? params.cdpMethod.trim() : "";
           if (!cdpMethod) {
@@ -833,7 +866,7 @@ export function createBrowserTool(opts?: {
                 : await browserTabs(baseUrl, { profile }).catch(() => []);
               if (!tabs.length) {
                 throw new Error(
-                  "No Chrome tabs are attached via the OpenClaw Browser Relay extension. Click the toolbar icon on the tab you want to control (badge ON), then retry.",
+                  "No Chrome tabs are attached. The Browser Relay extension auto-attaches tabs when alwaysOn is enabled (default). Check that the extension is installed, loaded in chrome://extensions, and the relay is connected (badge should not show '!').",
                   { cause: err },
                 );
               }
