@@ -27,10 +27,7 @@ const MemoryGetSchema = Type.Object({
   lines: Type.Optional(Type.Number()),
 });
 
-export function createMemorySearchTool(options: {
-  config?: OpenClawConfig;
-  agentSessionKey?: string;
-}): AnyAgentTool | null {
+function resolveMemoryToolContext(options: { config?: OpenClawConfig; agentSessionKey?: string }) {
   const cfg = options.config;
   if (!cfg) {
     return null;
@@ -42,6 +39,18 @@ export function createMemorySearchTool(options: {
   if (!resolveMemorySearchConfig(cfg, agentId)) {
     return null;
   }
+  return { cfg, agentId };
+}
+
+export function createMemorySearchTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const ctx = resolveMemoryToolContext(options);
+  if (!ctx) {
+    return null;
+  }
+  const { cfg, agentId } = ctx;
   return {
     label: "Memory Search",
     name: "memory_search",
@@ -96,17 +105,11 @@ export function createMemoryGetTool(options: {
   config?: OpenClawConfig;
   agentSessionKey?: string;
 }): AnyAgentTool | null {
-  const cfg = options.config;
-  if (!cfg) {
+  const ctx = resolveMemoryToolContext(options);
+  if (!ctx) {
     return null;
   }
-  const agentId = resolveSessionAgentId({
-    sessionKey: options.agentSessionKey,
-    config: cfg,
-  });
-  if (!resolveMemorySearchConfig(cfg, agentId)) {
-    return null;
-  }
+  const { cfg, agentId } = ctx;
   return {
     label: "Memory Get",
     name: "memory_get",
@@ -143,17 +146,11 @@ export function createMemoryFeedbackTool(options: {
   config?: OpenClawConfig;
   agentSessionKey?: string;
 }): AnyAgentTool | null {
-  const cfg = options.config;
-  if (!cfg) {
+  const ctx = resolveMemoryToolContext(options);
+  if (!ctx) {
     return null;
   }
-  const agentId = resolveSessionAgentId({
-    sessionKey: options.agentSessionKey,
-    config: cfg,
-  });
-  if (!resolveMemorySearchConfig(cfg, agentId)) {
-    return null;
-  }
+  const { cfg, agentId } = ctx;
   return {
     label: "Memory Feedback",
     name: "memory_feedback",

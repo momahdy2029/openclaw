@@ -39,10 +39,12 @@ async function checkRelayReachable(port) {
 }
 
 async function load() {
-  const stored = await chrome.storage.local.get(['relayPort'])
+  const stored = await chrome.storage.local.get(['relayPort', 'alwaysOn'])
   const port = clampPort(stored.relayPort)
   document.getElementById('port').value = String(port)
   updateRelayUrl(port)
+  // Default to true when not set
+  document.getElementById('always-on').checked = stored.alwaysOn !== false
   await checkRelayReachable(port)
 }
 
@@ -56,4 +58,7 @@ async function save() {
 }
 
 document.getElementById('save').addEventListener('click', () => void save())
+document.getElementById('always-on').addEventListener('change', (e) => {
+  void chrome.storage.local.set({ alwaysOn: e.target.checked })
+})
 void load()
