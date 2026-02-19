@@ -204,12 +204,10 @@ function runCliclick(bin: string, args: string[]): Promise<void> {
     execFile(bin, args, { timeout: 10_000 }, (err, stdout, stderr) => {
       if (err) {
         const combined = [stderr?.trim(), stdout?.trim()].filter(Boolean).join(" | ");
-        const errObj = err as NodeJS.ErrnoException & { code?: string | number; signal?: string };
-        const exitInfo = errObj.signal
-          ? `signal=${errObj.signal}`
-          : typeof errObj.code === "number"
-            ? `exit=${errObj.code}`
-            : "";
+        const errObj = err as Record<string, unknown>;
+        const sig = typeof errObj.signal === "string" ? errObj.signal : "";
+        const code = typeof errObj.code === "number" ? errObj.code : -1;
+        const exitInfo = sig ? `signal=${sig}` : code >= 0 ? `exit=${code}` : "";
         const detail =
           combined || exitInfo || (err instanceof Error ? err.message : "unknown error");
         if (
