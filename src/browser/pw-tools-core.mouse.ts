@@ -201,14 +201,21 @@ function buildCliclickArgs(path: Point[], kind: MouseKind): string[] {
 
 function runCliclick(bin: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: 10_000 }, (err, _stdout, stderr) => {
+    execFile(bin, args, { timeout: 10_000 }, (err, stdout, stderr) => {
       if (err) {
-        const errMessage = err instanceof Error ? err.message : "unknown error";
-        const msg = stderr?.trim() || errMessage;
+        const combined = [stderr?.trim(), stdout?.trim()].filter(Boolean).join(" | ");
+        const errObj = err as NodeJS.ErrnoException & { code?: string | number; signal?: string };
+        const exitInfo = errObj.signal
+          ? `signal=${errObj.signal}`
+          : typeof errObj.code === "number"
+            ? `exit=${errObj.code}`
+            : "";
+        const detail =
+          combined || exitInfo || (err instanceof Error ? err.message : "unknown error");
         if (
-          msg.includes("accessibility") ||
-          msg.includes("permission") ||
-          msg.includes("trusted")
+          detail.includes("accessibility") ||
+          detail.includes("permission") ||
+          detail.includes("trusted")
         ) {
           reject(
             new Error(
@@ -216,7 +223,7 @@ function runCliclick(bin: string, args: string[]): Promise<void> {
             ),
           );
         } else {
-          reject(new Error(`cliclick failed: ${msg}`));
+          reject(new Error(`cliclick failed (${exitInfo}): ${detail}`));
         }
       } else {
         resolve();
@@ -234,7 +241,9 @@ async function getElementScreenCoords(opts: {
   targetId?: string;
   ref: string;
 }): Promise<Point> {
+  const t0 = Date.now();
   const page = await getPageForTargetId(opts);
+  const t1 = Date.now();
   ensurePageState(page);
   restoreRoleRefsForTarget({ cdpUrl: opts.cdpUrl, targetId: opts.targetId, page });
   const ref = requireRef(opts.ref);
@@ -242,10 +251,11 @@ async function getElementScreenCoords(opts: {
 
   let box: { x: number; y: number; width: number; height: number } | null;
   try {
-    box = await locator.boundingBox();
+    box = await locator.boundingBox({ timeout: 8000 });
   } catch (err) {
     throw toAIFriendlyError(err, ref);
   }
+  const t2 = Date.now();
   if (!box) {
     throw new Error("Element has no bounding box (not visible). Try scrolling into view first.");
   }
@@ -255,6 +265,8 @@ async function getElementScreenCoords(opts: {
     screenY: window.screenY,
     chromeHeight: window.outerHeight - window.innerHeight,
   }));
+  const t3 = Date.now();
+  console.log(`[mouse] getPage=${t1 - t0}ms boundingBox=${t2 - t1}ms evaluate=${t3 - t2}ms`);
 
   return {
     x: Math.round(metrics.screenX + box.x + box.width / 2),

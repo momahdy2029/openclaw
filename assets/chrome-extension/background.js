@@ -171,19 +171,19 @@ function onRelayClosed(reason) {
     p.reject(new Error(`Relay disconnected (${reason})`))
   }
 
-  // Remember which tabs were attached so we can re-attach on reconnect
-  const previousTabIds = [...tabs.keys()]
-
-  for (const tabId of previousTabIds) {
-    void chrome.debugger.detach({ tabId }).catch(() => {})
-    setBadge(tabId, 'connecting')
-    void chrome.action.setTitle({
-      tabId,
-      title: 'OpenClaw Browser Relay: disconnected (reconnecting…)',
-    }).catch(() => {})
+  // Keep debugger sessions alive — only update badges to show relay is reconnecting.
+  // We do NOT detach from the Chrome debugger here. The debugger sessions survive
+  // independently of the relay WebSocket. On reconnect we re-announce them.
+  for (const [tabId, tab] of tabs.entries()) {
+    if (tab.state === 'connected') {
+      setBadge(tabId, 'connecting')
+      void chrome.action.setTitle({
+        tabId,
+        title: 'OpenClaw Browser Relay: relay reconnecting…',
+      }).catch(() => {})
+    }
   }
-  tabs.clear()
-  tabBySession.clear()
+  // Clear child sessions — they reference relay-side state that won't survive restart
   childSessionToTab.clear()
 
   // Notify user of disconnection
@@ -208,7 +208,9 @@ function scheduleReconnect() {
     reconnectTimer = null
     try {
       await ensureRelayConnection()
-      // Re-attach all eligible tabs after reconnect
+      // Re-announce tabs whose debugger sessions survived the relay restart
+      await reannounceExistingTabs()
+      // Attach any new tabs that appeared while disconnected
       await attachAllEligibleTabs()
       // Send tab inventory so relay knows what we have
       sendTabInventory()
@@ -251,6 +253,46 @@ function requestFromRelay(command) {
       reject(err instanceof Error ? err : new Error(String(err)))
     }
   })
+}
+
+// ─── Re-announce surviving debugger sessions after relay reconnect ──────────
+
+async function reannounceExistingTabs() {
+  const entries = [...tabs.entries()]
+  for (const [tabId, tab] of entries) {
+    if (tab.state !== 'connected' || !tab.sessionId || !tab.targetId) continue
+    try {
+      // Verify debugger is still attached by querying target info
+      const info = /** @type {any} */ (
+        await chrome.debugger.sendCommand({ tabId }, 'Target.getTargetInfo')
+      )
+      const targetInfo = info?.targetInfo
+      if (!targetInfo) throw new Error('no targetInfo')
+
+      // Re-announce to the new relay connection
+      sendToRelay({
+        method: 'forwardCDPEvent',
+        params: {
+          method: 'Target.attachedToTarget',
+          params: {
+            sessionId: tab.sessionId,
+            targetInfo: { ...targetInfo, attached: true },
+            waitingForDebugger: false,
+          },
+        },
+      })
+      setBadge(tabId, 'on')
+      void chrome.action.setTitle({
+        tabId,
+        title: 'OpenClaw Browser Relay: attached (click to detach)',
+      }).catch(() => {})
+    } catch {
+      // Debugger session died (tab closed, navigated to chrome://, etc.) — clean up
+      if (tab.sessionId) tabBySession.delete(tab.sessionId)
+      tabs.delete(tabId)
+      setBadge(tabId, 'off')
+    }
+  }
 }
 
 // ─── Tab inventory ──────────────────────────────────────────────────────────

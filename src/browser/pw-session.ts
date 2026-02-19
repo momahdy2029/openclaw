@@ -372,7 +372,15 @@ async function getAllPages(browser: Browser): Promise<Page[]> {
 }
 
 async function pageTargetId(page: Page): Promise<string | null> {
-  const session = await page.context().newCDPSession(page);
+  // Extension relays may block CDP session creation entirely, causing newCDPSession
+  // to hang forever. Use a timeout so we fall through to the URL-based fallback.
+  const timeout = 3000;
+  const session = await Promise.race([
+    page.context().newCDPSession(page),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("newCDPSession timed out")), timeout),
+    ),
+  ]);
   try {
     const info = (await session.send("Target.getTargetInfo")) as TargetInfoResponse;
     const targetId = String(info?.targetInfo?.targetId ?? "").trim();
@@ -416,7 +424,10 @@ async function findPageByTargetId(
         .replace(/^ws:/, "http:")
         .replace(/\/cdp$/, "");
       const listUrl = `${baseUrl}/json/list`;
-      const response = await fetch(listUrl, { headers: getHeadersWithAuth(listUrl) });
+      const response = await fetch(listUrl, {
+        headers: getHeadersWithAuth(listUrl),
+        signal: AbortSignal.timeout(5000),
+      });
       if (response.ok) {
         const targets = (await response.json()) as Array<{
           id: string;
