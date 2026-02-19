@@ -170,33 +170,23 @@ function generatePath(from: Point, to: Point): Point[] {
 // cliclick command building & execution
 // ---------------------------------------------------------------------------
 
-/** Build cliclick argument list: chain of m: (move) + w: (wait) ending with the final action. */
-function buildCliclickArgs(path: Point[], kind: MouseKind): string[] {
-  const args: string[] = [];
-  // Move through all intermediate points (all except the last)
-  for (let i = 0; i < path.length - 1; i++) {
-    const p = path[i];
-    args.push(`m:${p.x},${p.y}`);
-    args.push("w:16");
-  }
-  // Final point: apply the action
-  const last = path[path.length - 1];
-  const coord = `${last.x},${last.y}`;
+/** Build cliclick argument list for a batch of moves (no waits — timing is handled by the caller). */
+function buildMoveBatch(points: Point[]): string[] {
+  return points.map((p) => `m:${p.x},${p.y}`);
+}
+
+function buildFinalAction(point: Point, kind: MouseKind): string[] {
+  const coord = `${point.x},${point.y}`;
   switch (kind) {
     case "move":
-      args.push(`m:${coord}`);
-      break;
+      return [`m:${coord}`];
     case "click":
-      args.push(`c:${coord}`);
-      break;
+      return [`c:${coord}`];
     case "doubleClick":
-      args.push(`dc:${coord}`);
-      break;
+      return [`dc:${coord}`];
     case "rightClick":
-      args.push(`rc:${coord}`);
-      break;
+      return [`rc:${coord}`];
   }
-  return args;
 }
 
 function runCliclick(bin: string, args: string[]): Promise<void> {
@@ -305,8 +295,21 @@ export async function mouseViaCliclick(opts: {
   const path = generatePath(current, target);
 
   if (path.length > 0) {
-    const args = buildCliclickArgs(path, opts.kind);
-    await runCliclick(bin, args);
+    // Execute moves in small batches with Node.js delays between batches.
+    // Running everything in one giant cliclick call can hang in LaunchAgent contexts.
+    const BATCH_SIZE = 5;
+    const DELAY_MS = 16;
+    const intermediates = path.slice(0, -1);
+    for (let i = 0; i < intermediates.length; i += BATCH_SIZE) {
+      const batch = intermediates.slice(i, i + BATCH_SIZE);
+      await runCliclick(bin, buildMoveBatch(batch));
+      if (i + BATCH_SIZE < intermediates.length) {
+        await new Promise((r) => setTimeout(r, DELAY_MS));
+      }
+    }
+    // Final action (click/move/etc.) at the last point
+    const last = path[path.length - 1];
+    await runCliclick(bin, buildFinalAction(last, opts.kind));
   }
 
   return { screenX: target.x, screenY: target.y, kind: opts.kind };
