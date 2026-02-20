@@ -17,6 +17,8 @@ You monitor, diagnose, and repair the OpenClaw gateway. The user is reaching you
 | Supervisor logs          | `~/.openclaw/logs/supervisor.log`                     |
 | Node binary              | `/usr/local/Cellar/node@22/22.22.0/bin/node`          |
 | Gateway port             | `18789`                                               |
+| Browser Relay port       | `18792`                                               |
+| Relay status endpoint    | `GET http://127.0.0.1:18792/extension/status`         |
 
 ## How to Check Gateway Health
 
@@ -65,6 +67,15 @@ python3 -c "import json; json.load(open('$HOME/.openclaw/openclaw.json'))"
 tail -100 ~/.openclaw/logs/gateway.err.log
 # Common causes: missing env vars, bad config, port conflict, dependency issue
 ```
+
+### Browser Relay disconnected
+
+The browser relay runs on port 18792 and bridges the Chrome extension to OpenClaw for browser automation. If the extension disconnects:
+
+1. Check if Chrome is running
+2. Check if the OpenClaw Browser Relay extension is enabled in `chrome://extensions`
+3. The relay server starts with the gateway — if the server itself is unreachable, restart the gateway
+4. Check status: `curl -s http://127.0.0.1:18792/extension/status | python3 -m json.tool`
 
 ### Need to rebuild after code changes
 

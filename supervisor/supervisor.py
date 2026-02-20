@@ -5,7 +5,7 @@ Features:
   - Telegram long-polling (stdlib only, zero deps)
   - Claude Code CLI subprocess with streaming responses
   - Session continuity via --resume
-  - Proactive health watchdog (alerts on gateway down)
+  - Proactive health watchdog (alerts on gateway/relay down)
   - Inline keyboard buttons for quick actions
   - Voice replies via Supertonic TTS
   - Native Claude auto-memory (CLAUDE.md + ~/.claude/projects/)
@@ -39,7 +39,7 @@ TTS_ONNX_DIR = Path.home() / "supertonic" / "assets" / "onnx"
 TTS_VOICE_STYLE = Path.home() / "supertonic" / "assets" / "voice_styles" / "F1.json"
 TTS_PYTHON = "/usr/local/bin/python3.11"
 
-CLAUDE_TIMEOUT = 120
+CLAUDE_TIMEOUT = 300
 POLL_TIMEOUT = 30
 MAX_MSG_LEN = 4000
 HEALTH_CHECK_INTERVAL = 60  # seconds
@@ -182,6 +182,7 @@ def run_claude_streaming(chat_id, user_text, on_partial=None):
         CLAUDE_BIN, "-p",
         "--output-format", "stream-json",
         "--verbose",
+        "--include-partial-messages",
         "--dangerously-skip-permissions",
         "--model", "sonnet",
     ]
@@ -214,10 +215,14 @@ def run_claude_streaming(chat_id, user_text, on_partial=None):
     deadline = time.time() + CLAUDE_TIMEOUT
 
     try:
-        for raw_line in proc.stdout:
+        # Use readline() instead of iterator to avoid Python's read-ahead buffering
+        while True:
+            raw_line = proc.stdout.readline()
+            if not raw_line:
+                break  # EOF
             if time.time() > deadline:
                 proc.kill()
-                return "[timeout] Claude took too long (>120s). Try /new to reset."
+                return "[timeout] Claude took too long (>5min). Try /new to reset."
 
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
@@ -235,11 +240,18 @@ def run_claude_streaming(chat_id, user_text, on_partial=None):
                 new_session_id = event["session_id"]
 
             if etype == "assistant" and "message" in event:
-                # Partial message chunk
-                partial = event["message"]
-                if partial and on_partial:
-                    full_text = partial
-                    on_partial(full_text)
+                # Extract text from message.content[].text
+                msg = event["message"]
+                if isinstance(msg, dict):
+                    parts = []
+                    for block in msg.get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+                    text = "".join(parts)
+                    if text:
+                        full_text = text
+                        if on_partial:
+                            on_partial(full_text)
 
             elif etype == "result":
                 full_text = event.get("result", full_text)
@@ -388,6 +400,23 @@ def check_gateway_health():
     return healthy, "\n".join(lines)
 
 
+def check_relay_health():
+    """Returns (is_connected: bool, status_text: str)."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:18792/extension/status", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+            connected = data.get("connected", False)
+            if connected:
+                return True, "Browser Relay: extension connected"
+            else:
+                return False, "Browser Relay: server running, extension NOT connected"
+    except urllib.error.URLError:
+        return False, "Browser Relay: server not reachable (port 18792)"
+    except Exception as e:
+        return False, f"Browser Relay: check failed ({e})"
+
+
 def cmd_logs(n=20):
     """Tail recent gateway logs."""
     for name in ["gateway.err.log", "gateway.log"]:
@@ -404,7 +433,10 @@ def cmd_logs(n=20):
 
 # --- Health watchdog ---
 
-_watchdog_last_state = {"healthy": True, "alerted": False}
+_watchdog_last_state = {
+    "healthy": True, "alerted": False,
+    "relay_connected": True, "relay_alerted": False,
+}
 
 
 def watchdog_loop(chat_id):
@@ -439,6 +471,24 @@ def watchdog_loop(chat_id):
             elif healthy:
                 _watchdog_last_state["alerted"] = False
 
+            # Browser relay check
+            relay_ok, relay_status = check_relay_health()
+
+            if not relay_ok and not _watchdog_last_state["relay_alerted"]:
+                _watchdog_last_state["relay_connected"] = False
+                _watchdog_last_state["relay_alerted"] = True
+                log.warning("Watchdog: browser relay is DOWN")
+                send(chat_id, f"Browser Relay is DOWN.\n\n{relay_status}")
+
+            elif relay_ok and not _watchdog_last_state["relay_connected"]:
+                _watchdog_last_state["relay_connected"] = True
+                _watchdog_last_state["relay_alerted"] = False
+                log.info("Watchdog: browser relay recovered")
+                send(chat_id, "Browser Relay is back up (extension reconnected).")
+
+            elif relay_ok:
+                _watchdog_last_state["relay_alerted"] = False
+
         except Exception as e:
             log.exception("Watchdog error: %s", e)
 
@@ -468,7 +518,18 @@ def handle_message(msg):
         return
 
     if text.lower() == "/status":
+        _, gw_status = check_gateway_health()
+        _, relay_status = check_relay_health()
+        send(chat_id, f"{gw_status}\n\n{relay_status}", reply_markup=make_action_keyboard())
+        return
+
+    if text.lower() == "/gateway":
         _, status = check_gateway_health()
+        send(chat_id, status, reply_markup=make_action_keyboard())
+        return
+
+    if text.lower() == "/relay":
+        _, status = check_relay_health()
         send(chat_id, status, reply_markup=make_action_keyboard())
         return
 
@@ -480,7 +541,9 @@ def handle_message(msg):
 
     if text.lower() == "/help":
         send(chat_id, (
-            "/status — quick gateway health check\n"
+            "/status — gateway + browser relay health\n"
+            "/gateway — gateway status only\n"
+            "/relay — browser relay status only\n"
             "/logs [N] — tail N lines of gateway logs\n"
             "/new — clear Claude session\n"
             "/voice — voice-read last response\n"
@@ -509,15 +572,14 @@ def handle_message(msg):
     def on_partial(text_so_far):
         """Called with progressive response text as Claude streams."""
         now = time.time()
-        # Throttle edits to every 3s and only if text changed meaningfully
-        if (now - last_edit_time[0] >= 3
-                and len(text_so_far) - len(last_edit_text[0]) > 40
+        # Throttle edits: every 1.5s and at least 20 new chars
+        if (now - last_edit_time[0] >= 1.5
+                and len(text_so_far) - len(last_edit_text[0]) > 20
                 and placeholder
                 and len(text_so_far) <= MAX_MSG_LEN):
-            edit_message(chat_id, placeholder, text_so_far)
+            edit_message(chat_id, placeholder, text_so_far + " ...")
             last_edit_time[0] = now
             last_edit_text[0] = text_so_far
-            typing(chat_id)
 
     # Run Claude in a thread so we can keep sending typing indicators
     result_holder = [None]
@@ -585,8 +647,9 @@ def handle_callback(callback_query):
     log.info("Callback from %d: %s", user_id, data)
 
     if data == "action:status":
-        _, status = check_gateway_health()
-        send(chat_id, status, reply_markup=make_action_keyboard())
+        _, gw_status = check_gateway_health()
+        _, relay_status = check_relay_health()
+        send(chat_id, f"{gw_status}\n\n{relay_status}", reply_markup=make_action_keyboard())
 
     elif data == "action:logs":
         send(chat_id, cmd_logs(20))
