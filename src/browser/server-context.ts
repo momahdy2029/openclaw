@@ -10,7 +10,9 @@ import type {
   ProfileRuntimeState,
   ProfileStatus,
 } from "./server-context.types.js";
-import { appendCdpPath, createTargetViaCdp, getHeadersWithAuth, normalizeCdpWsUrl } from "./cdp.js";
+import { SsrFBlockedError } from "../infra/net/ssrf.js";
+import { fetchJson, fetchOk } from "./cdp.helpers.js";
+import { appendCdpPath, createTargetViaCdp, normalizeCdpWsUrl } from "./cdp.js";
 import {
   isChromeCdpReady,
   isChromeReachable,
@@ -23,6 +25,11 @@ import {
   ensureChromeExtensionRelayServer,
   stopChromeExtensionRelayServer,
 } from "./extension-relay.js";
+import {
+  assertBrowserNavigationAllowed,
+  InvalidBrowserNavigationUrlError,
+  withBrowserNavigationPolicy,
+} from "./navigation-guard.js";
 import { getPwAiModule } from "./pw-ai-module.js";
 import {
   refreshResolvedBrowserConfigFromDisk,
@@ -59,35 +66,6 @@ function normalizeWsUrl(raw: string | undefined, cdpBaseUrl: string): string | u
     return normalizeCdpWsUrl(raw, cdpBaseUrl);
   } catch {
     return raw;
-  }
-}
-
-async function fetchJson<T>(url: string, timeoutMs = 1500, init?: RequestInit): Promise<T> {
-  const ctrl = new AbortController();
-  const t = setTimeout(ctrl.abort.bind(ctrl), timeoutMs);
-  try {
-    const headers = getHeadersWithAuth(url, (init?.headers as Record<string, string>) || {});
-    const res = await fetch(url, { ...init, headers, signal: ctrl.signal });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    return (await res.json()) as T;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function fetchOk(url: string, timeoutMs = 1500, init?: RequestInit): Promise<void> {
-  const ctrl = new AbortController();
-  const t = setTimeout(ctrl.abort.bind(ctrl), timeoutMs);
-  try {
-    const headers = getHeadersWithAuth(url, (init?.headers as Record<string, string>) || {});
-    const res = await fetch(url, { ...init, headers, signal: ctrl.signal });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-  } finally {
-    clearTimeout(t);
   }
 }
 
@@ -158,13 +136,21 @@ function createProfileContext(
   };
 
   const openTab = async (url: string): Promise<BrowserTab> => {
+    const ssrfPolicyOpts = withBrowserNavigationPolicy(state().resolved.ssrfPolicy);
+    await assertBrowserNavigationAllowed({ url, ...ssrfPolicyOpts });
+
     // For remote profiles, use Playwright's persistent connection to create tabs
     // This ensures the tab persists beyond a single request
     if (!profile.cdpIsLoopback) {
       const mod = await getPwAiModule({ mode: "strict" });
       const createPageViaPlaywright = (mod as Partial<PwAiModule> | null)?.createPageViaPlaywright;
       if (typeof createPageViaPlaywright === "function") {
-        const page = await createPageViaPlaywright({ cdpUrl: profile.cdpUrl, url });
+        const page = await createPageViaPlaywright({
+          cdpUrl: profile.cdpUrl,
+          url,
+          ...ssrfPolicyOpts,
+          navigationChecked: true,
+        });
         const profileState = getProfileState();
         profileState.lastTargetId = page.targetId;
         return {
@@ -179,6 +165,8 @@ function createProfileContext(
     const createdViaCdp = await createTargetViaCdp({
       cdpUrl: profile.cdpUrl,
       url,
+      ...ssrfPolicyOpts,
+      navigationChecked: true,
     })
       .then((r) => r.targetId)
       .catch(() => null);
@@ -660,6 +648,12 @@ export function createBrowserRouteContext(opts: ContextOptions): BrowserRouteCon
   const getDefaultContext = () => forProfile();
 
   const mapTabError = (err: unknown) => {
+    if (err instanceof SsrFBlockedError) {
+      return { status: 400, message: err.message };
+    }
+    if (err instanceof InvalidBrowserNavigationUrlError) {
+      return { status: 400, message: err.message };
+    }
     const msg = String(err);
     if (msg.includes("ambiguous target id prefix")) {
       return { status: 409, message: "ambiguous target id prefix" };

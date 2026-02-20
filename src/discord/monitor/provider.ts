@@ -1,5 +1,10 @@
-import type { GatewayPlugin } from "@buape/carbon/gateway";
-import { Client, ReadyListener, type BaseMessageInteractiveComponent } from "@buape/carbon";
+import {
+  Client,
+  ReadyListener,
+  type BaseMessageInteractiveComponent,
+  type Modal,
+} from "@buape/carbon";
+import { GatewayCloseCodes, type GatewayPlugin } from "@buape/carbon/gateway";
 import { Routes } from "discord-api-types/v10";
 import { inspect } from "node:util";
 import type { HistoryEntry } from "../../auto-reply/reply/history.js";
@@ -8,6 +13,7 @@ import { resolveTextChunkLimit } from "../../auto-reply/chunk.js";
 import { listNativeCommandSpecsForConfig } from "../../auto-reply/commands-registry.js";
 import { listSkillCommandsForAgents } from "../../auto-reply/skill-commands.js";
 import {
+  addAllowlistUserEntriesFromConfigEntry,
   buildAllowlistResolutionSummary,
   mergeAllowlist,
   resolveAllowlistIdAdditions,
@@ -32,7 +38,17 @@ import { fetchDiscordApplicationId } from "../probe.js";
 import { resolveDiscordChannelAllowlist } from "../resolve-channels.js";
 import { resolveDiscordUserAllowlist } from "../resolve-users.js";
 import { normalizeDiscordToken } from "../token.js";
-import { createAgentComponentButton, createAgentSelectMenu } from "./agent-components.js";
+import {
+  createAgentComponentButton,
+  createAgentSelectMenu,
+  createDiscordComponentButton,
+  createDiscordComponentChannelSelect,
+  createDiscordComponentMentionableSelect,
+  createDiscordComponentModal,
+  createDiscordComponentRoleSelect,
+  createDiscordComponentStringSelect,
+  createDiscordComponentUserSelect,
+} from "./agent-components.js";
 import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
 import { createDiscordGatewayPlugin } from "./gateway-plugin.js";
 import { registerGateway, unregisterGateway } from "./gateway-registry.js";
@@ -49,6 +65,7 @@ import {
   createDiscordNativeCommand,
 } from "./native-command.js";
 import { resolveDiscordPresenceUpdate } from "./presence.js";
+import { resolveDiscordRestFetch } from "./rest-fetch.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
@@ -61,7 +78,7 @@ export type MonitorDiscordOpts = {
   replyToMode?: ReplyToMode;
 };
 
-function summarizeAllowList(list?: Array<string | number>) {
+function summarizeAllowList(list?: string[]) {
   if (!list || list.length === 0) {
     return "any";
   }
@@ -78,6 +95,26 @@ function summarizeGuilds(entries?: Record<string, unknown>) {
   const sample = keys.slice(0, 4);
   const suffix = keys.length > sample.length ? ` (+${keys.length - sample.length})` : "";
   return `${sample.join(", ")}${suffix}`;
+}
+
+function dedupeSkillCommandsForDiscord(
+  skillCommands: ReturnType<typeof listSkillCommandsForAgents>,
+) {
+  const seen = new Set<string>();
+  const deduped: ReturnType<typeof listSkillCommandsForAgents> = [];
+  for (const command of skillCommands) {
+    const key = command.skillName.trim().toLowerCase();
+    if (!key) {
+      deduped.push(command);
+      continue;
+    }
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(command);
+  }
+  return deduped;
 }
 
 async function deployDiscordCommands(params: {
@@ -130,6 +167,16 @@ function formatDiscordDeployErrorDetails(err: unknown): string {
   return details.length > 0 ? ` (${details.join(", ")})` : "";
 }
 
+const DISCORD_DISALLOWED_INTENTS_CODE = GatewayCloseCodes.DisallowedIntents;
+
+function isDiscordDisallowedIntentsError(err: unknown): boolean {
+  if (!err) {
+    return false;
+  }
+  const message = formatErrorMessage(err);
+  return message.includes(String(DISCORD_DISALLOWED_INTENTS_CODE));
+}
+
 export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   const cfg = opts.config ?? loadConfig();
   const account = resolveDiscordAccount({
@@ -146,6 +193,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
 
   const discordCfg = account.config;
+  const discordRestFetch = resolveDiscordRestFetch(discordCfg.proxy, runtime);
   const dmConfig = discordCfg.dm;
   let guildEntries = discordCfg.guilds;
   const defaultGroupPolicy = cfg.channels?.defaults?.groupPolicy;
@@ -221,6 +269,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
           const resolved = await resolveDiscordChannelAllowlist({
             token,
             entries: entries.map((entry) => entry.input),
+            fetcher: discordRestFetch,
           });
           const nextGuilds = { ...guildEntries };
           const mapping: string[] = [];
@@ -277,18 +326,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         const resolvedUsers = await resolveDiscordUserAllowlist({
           token,
           entries: allowEntries.map((entry) => String(entry)),
+          fetcher: discordRestFetch,
         });
-        const mapping: string[] = [];
-        const unresolved: string[] = [];
-        const additions: string[] = [];
-        for (const entry of resolvedUsers) {
-          if (entry.resolved && entry.id) {
-            mapping.push(`${entry.input}→${entry.id}`);
-            additions.push(entry.id);
-          } else {
-            unresolved.push(entry.input);
-          }
-        }
+        const { mapping, unresolved, additions } = buildAllowlistResolutionSummary(resolvedUsers);
         allowFrom = mergeAllowlist({ existing: allowFrom, additions });
         summarizeMapping("discord users", mapping, unresolved, runtime);
       } catch (err) {
@@ -304,30 +344,10 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         if (!guild || typeof guild !== "object") {
           continue;
         }
-        const users = (guild as { users?: Array<string | number> }).users;
-        if (Array.isArray(users)) {
-          for (const entry of users) {
-            const trimmed = String(entry).trim();
-            if (trimmed && trimmed !== "*") {
-              userEntries.add(trimmed);
-            }
-          }
-        }
+        addAllowlistUserEntriesFromConfigEntry(userEntries, guild);
         const channels = (guild as { channels?: Record<string, unknown> }).channels ?? {};
         for (const channel of Object.values(channels)) {
-          if (!channel || typeof channel !== "object") {
-            continue;
-          }
-          const channelUsers = (channel as { users?: Array<string | number> }).users;
-          if (!Array.isArray(channelUsers)) {
-            continue;
-          }
-          for (const entry of channelUsers) {
-            const trimmed = String(entry).trim();
-            if (trimmed && trimmed !== "*") {
-              userEntries.add(trimmed);
-            }
-          }
+          addAllowlistUserEntriesFromConfigEntry(userEntries, channel);
         }
       }
 
@@ -336,6 +356,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
           const resolvedUsers = await resolveDiscordUserAllowlist({
             token,
             entries: Array.from(userEntries),
+            fetcher: discordRestFetch,
           });
           const { resolvedMap, mapping, unresolved } =
             buildAllowlistResolutionSummary(resolvedUsers);
@@ -346,7 +367,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
               continue;
             }
             const nextGuild = { ...guildConfig } as Record<string, unknown>;
-            const users = (guildConfig as { users?: Array<string | number> }).users;
+            const users = (guildConfig as { users?: string[] }).users;
             if (Array.isArray(users) && users.length > 0) {
               const additions = resolveAllowlistIdAdditions({ existing: users, resolvedMap });
               nextGuild.users = mergeAllowlist({ existing: users, additions });
@@ -377,14 +398,16 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     );
   }
 
-  const applicationId = await fetchDiscordApplicationId(token, 4000);
+  const applicationId = await fetchDiscordApplicationId(token, 4000, discordRestFetch);
   if (!applicationId) {
     throw new Error("Failed to resolve Discord application id");
   }
 
   const maxDiscordCommands = 100;
   let skillCommands =
-    nativeEnabled && nativeSkillsEnabled ? listSkillCommandsForAgents({ cfg }) : [];
+    nativeEnabled && nativeSkillsEnabled
+      ? dedupeSkillCommandsForDiscord(listSkillCommandsForAgents({ cfg }))
+      : [];
   let commandSpecs = nativeEnabled
     ? listNativeCommandSpecsForConfig(cfg, { skillCommands, provider: "discord" })
     : [];
@@ -439,30 +462,32 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       sessionPrefix,
     }),
   ];
+  const modals: Modal[] = [];
 
   if (execApprovalsHandler) {
     components.push(createExecApprovalButton({ handler: execApprovalsHandler }));
   }
 
   if (agentComponentsEnabled) {
-    components.push(
-      createAgentComponentButton({
-        cfg,
-        accountId: account.accountId,
-        guildEntries,
-        allowFrom,
-        dmPolicy,
-      }),
-    );
-    components.push(
-      createAgentSelectMenu({
-        cfg,
-        accountId: account.accountId,
-        guildEntries,
-        allowFrom,
-        dmPolicy,
-      }),
-    );
+    const componentContext = {
+      cfg,
+      discordConfig: discordCfg,
+      accountId: account.accountId,
+      guildEntries,
+      allowFrom,
+      dmPolicy,
+      runtime,
+      token,
+    };
+    components.push(createAgentComponentButton(componentContext));
+    components.push(createAgentSelectMenu(componentContext));
+    components.push(createDiscordComponentButton(componentContext));
+    components.push(createDiscordComponentStringSelect(componentContext));
+    components.push(createDiscordComponentUserSelect(componentContext));
+    components.push(createDiscordComponentRoleSelect(componentContext));
+    components.push(createDiscordComponentMentionableSelect(componentContext));
+    components.push(createDiscordComponentChannelSelect(componentContext));
+    modals.push(createDiscordComponentModal(componentContext));
   }
 
   class DiscordStatusReadyListener extends ReadyListener {
@@ -494,6 +519,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       commands,
       listeners: [new DiscordStatusReadyListener()],
       components,
+      modals,
     },
     [createDiscordGatewayPlugin({ discordConfig: discordCfg, runtime })],
   );
@@ -627,6 +653,8 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     }, HELLO_TIMEOUT_MS);
   };
   gatewayEmitter?.on("debug", onGatewayDebug);
+  // Disallowed intents (4014) should stop the provider without crashing the gateway.
+  let sawDisallowedIntents = false;
   try {
     await waitForDiscordGatewayStop({
       gateway: gateway
@@ -637,15 +665,30 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         : undefined,
       abortSignal,
       onGatewayError: (err) => {
+        if (isDiscordDisallowedIntentsError(err)) {
+          sawDisallowedIntents = true;
+          runtime.error?.(
+            danger(
+              "discord: gateway closed with code 4014 (missing privileged gateway intents). Enable the required intents in the Discord Developer Portal or disable them in config.",
+            ),
+          );
+          return;
+        }
         runtime.error?.(danger(`discord gateway error: ${String(err)}`));
       },
       shouldStopOnError: (err) => {
         const message = String(err);
         return (
-          message.includes("Max reconnect attempts") || message.includes("Fatal Gateway error")
+          message.includes("Max reconnect attempts") ||
+          message.includes("Fatal Gateway error") ||
+          isDiscordDisallowedIntentsError(err)
         );
       },
     });
+  } catch (err) {
+    if (!sawDisallowedIntents && !isDiscordDisallowedIntentsError(err)) {
+      throw err;
+    }
   } finally {
     unregisterGateway(account.accountId);
     stopGatewayLogging();
@@ -677,4 +720,6 @@ async function clearDiscordNativeCommands(params: {
 
 export const __testing = {
   createDiscordGatewayPlugin,
+  dedupeSkillCommandsForDiscord,
+  resolveDiscordRestFetch,
 };

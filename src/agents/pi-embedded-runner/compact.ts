@@ -47,7 +47,10 @@ import { resolveSandboxContext } from "../sandbox.js";
 import { repairSessionFileIfNeeded } from "../session-file-repair.js";
 import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairing } from "../session-transcript-repair.js";
-import { acquireSessionWriteLock } from "../session-write-lock.js";
+import {
+  acquireSessionWriteLock,
+  resolveSessionLockMaxHoldFromTimeout,
+} from "../session-write-lock.js";
 import { detectRuntimeShell } from "../shell-utils.js";
 import {
   applySkillEnvOverrides,
@@ -57,7 +60,10 @@ import {
   type SkillSnapshot,
 } from "../skills.js";
 import { resolveTranscriptPolicy } from "../transcript-policy.js";
-import { compactWithSafetyTimeout } from "./compaction-safety-timeout.js";
+import {
+  compactWithSafetyTimeout,
+  EMBEDDED_COMPACTION_TIMEOUT_MS,
+} from "./compaction-safety-timeout.js";
 import { buildEmbeddedExtensionPaths } from "./extensions.js";
 import {
   logToolSchemasForGoogle,
@@ -252,16 +258,7 @@ export async function compactEmbeddedPiSessionDirect(
 
   const provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
   const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-  const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
-  await ensureOpenClawModelsJson(params.config, agentDir);
-  const { model, error, authStorage, modelRegistry } = resolveModel(
-    provider,
-    modelId,
-    agentDir,
-    params.config,
-  );
-  if (!model) {
-    const reason = error ?? `Unknown model: ${provider}/${modelId}`;
+  const fail = (reason: string): EmbeddedPiCompactResult => {
     log.warn(
       `[compaction-diag] end runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
         `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
@@ -273,6 +270,18 @@ export async function compactEmbeddedPiSessionDirect(
       compacted: false,
       reason,
     };
+  };
+  const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
+  await ensureOpenClawModelsJson(params.config, agentDir);
+  const { model, error, authStorage, modelRegistry } = resolveModel(
+    provider,
+    modelId,
+    agentDir,
+    params.config,
+  );
+  if (!model) {
+    const reason = error ?? `Unknown model: ${provider}/${modelId}`;
+    return fail(reason);
   }
   try {
     const apiKeyInfo = await getApiKeyForModel({
@@ -299,17 +308,7 @@ export async function compactEmbeddedPiSessionDirect(
     }
   } catch (err) {
     const reason = describeUnknownError(err);
-    log.warn(
-      `[compaction-diag] end runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
-        `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
-        `attempt=${attempt} maxAttempts=${maxAttempts} outcome=failed reason=${classifyCompactionReason(reason)} ` +
-        `durationMs=${Date.now() - startedAt}`,
-    );
-    return {
-      ok: false,
-      compacted: false,
-      reason,
-    };
+    return fail(reason);
   }
 
   await fs.mkdir(resolvedWorkspace, { recursive: true });
@@ -382,6 +381,7 @@ export async function compactEmbeddedPiSessionDirect(
       abortSignal: runAbortController.signal,
       modelProvider: model.provider,
       modelId,
+      modelContextWindowTokens: model.contextWindow,
       modelAuthMode: resolveModelAuthMode(model.provider, params.config),
     });
     const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider });
@@ -510,6 +510,9 @@ export async function compactEmbeddedPiSessionDirect(
 
     const sessionLock = await acquireSessionWriteLock({
       sessionFile: params.sessionFile,
+      maxHoldMs: resolveSessionLockMaxHoldFromTimeout({
+        timeoutMs: EMBEDDED_COMPACTION_TIMEOUT_MS,
+      }),
     });
     try {
       await repairSessionFileIfNeeded({
@@ -567,6 +570,7 @@ export async function compactEmbeddedPiSessionDirect(
           modelApi: model.api,
           modelId,
           provider,
+          config: params.config,
           sessionManager,
           sessionId: params.sessionId,
           policy: transcriptPolicy,
@@ -711,17 +715,7 @@ export async function compactEmbeddedPiSessionDirect(
     }
   } catch (err) {
     const reason = describeUnknownError(err);
-    log.warn(
-      `[compaction-diag] end runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
-        `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
-        `attempt=${attempt} maxAttempts=${maxAttempts} outcome=failed reason=${classifyCompactionReason(reason)} ` +
-        `durationMs=${Date.now() - startedAt}`,
-    );
-    return {
-      ok: false,
-      compacted: false,
-      reason,
-    };
+    return fail(reason);
   } finally {
     restoreSkillEnv?.();
     process.chdir(prevCwd);
