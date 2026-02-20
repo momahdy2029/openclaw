@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import type { PluginRuntime } from "./types.js";
 import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../agents/identity.js";
 import {
   createMemoryFeedbackTool,
@@ -143,6 +142,7 @@ import {
 } from "../../web/auth-store.js";
 import { loadWebMedia } from "../../web/media.js";
 import { formatNativeDependencyHint } from "./native-deps.js";
+import type { PluginRuntime } from "./types.js";
 
 let cachedVersion: string | null = null;
 
@@ -282,6 +282,7 @@ function createRuntimeMedia(): PluginRuntime["media"] {
 
 function createRuntimeTools(): PluginRuntime["tools"] {
   return {
+    createMemoryFeedbackTool,
     createMemoryGetTool,
     createMemorySearchTool,
     registerMemoryCli,
@@ -329,12 +330,6 @@ function createRuntimeChannel(): PluginRuntime["channel"] {
     activity: {
       record: recordChannelActivity,
       get: getChannelActivity,
-    },
-    tools: {
-      createMemoryFeedbackTool,
-      createMemoryGetTool,
-      createMemorySearchTool,
-      registerMemoryCli,
     },
     session: {
       resolveStorePath,
