@@ -37,7 +37,7 @@ SUPERVISOR_DIR = Path(__file__).resolve().parent
 TTS_SCRIPT = Path.home() / "supertonic" / "py" / "tts_stdout.py"
 TTS_ONNX_DIR = Path.home() / "supertonic" / "assets" / "onnx"
 TTS_VOICE_STYLE = Path.home() / "supertonic" / "assets" / "voice_styles" / "F1.json"
-TTS_PYTHON = "/usr/bin/python3"
+TTS_PYTHON = "/usr/local/bin/python3.11"
 
 CLAUDE_TIMEOUT = 120
 POLL_TIMEOUT = 30
@@ -181,6 +181,7 @@ def run_claude_streaming(chat_id, user_text, on_partial=None):
     cmd = [
         CLAUDE_BIN, "-p",
         "--output-format", "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
         "--model", "sonnet",
     ]
